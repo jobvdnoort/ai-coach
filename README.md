@@ -24,9 +24,9 @@ manual Lovelace resource is needed.
 
 | Field | Description |
 | --- | --- |
-| LLM API key | Key for any OpenAI-compatible chat completions API |
-| LLM API base URL | Defaults to `https://api.openai.com/v1` |
-| Model | Changeable later via *Configure* |
+| LLM provider | Google AI Studio or OpenAI |
+| LLM API key | API key for the selected provider |
+| Model | Provider-specific dropdown; changeable later via *Configure* |
 | Telegram bot token | Optional, from @BotFather |
 | Coach style | gentle / balanced / strict / drill sergeant (changeable later) |
 

@@ -12,12 +12,50 @@ CARD_FILENAME: Final = "ai-coach-card.js"
 CARD_URL: Final = f"/{DOMAIN}/{CARD_FILENAME}"
 
 CONF_BASE_URL: Final = "base_url"
+CONF_PROVIDER: Final = "provider"
 CONF_MODEL: Final = "model"
+CONF_CUSTOM_MODEL: Final = "custom_model"
+CONF_USE_CUSTOM_MODEL: Final = "use_custom_model"
 CONF_TELEGRAM_BOT_TOKEN: Final = "telegram_bot_token"
 CONF_COACH_STYLE: Final = "coach_style"
 
 DEFAULT_BASE_URL: Final = "https://api.openai.com/v1"
 DEFAULT_MODEL: Final = "gpt-4.1-mini"
+
+PROVIDER_OPENAI: Final = "openai"
+PROVIDER_GOOGLE_AI_STUDIO: Final = "google_ai_studio"
+DEFAULT_PROVIDER: Final = PROVIDER_OPENAI
+
+LLM_PROVIDERS: Final = [
+    PROVIDER_GOOGLE_AI_STUDIO,
+    PROVIDER_OPENAI,
+]
+
+PROVIDER_BASE_URLS: Final = {
+    PROVIDER_GOOGLE_AI_STUDIO: (
+        "https://generativelanguage.googleapis.com/v1beta/openai/"
+    ),
+    PROVIDER_OPENAI: "https://api.openai.com/v1",
+}
+
+PROVIDER_MODELS: Final = {
+    PROVIDER_GOOGLE_AI_STUDIO: [
+        "gemini-3.6-flash",
+        "gemini-3.6-pro",
+    ],
+    PROVIDER_OPENAI: [
+        "gpt-4.1-mini",
+        "gpt-4.1",
+        "gpt-4.1-nano",
+        "gpt-4o-mini",
+        "gpt-4o",
+    ],
+}
+
+PROVIDER_DEFAULT_MODELS: Final = {
+    PROVIDER_GOOGLE_AI_STUDIO: "gemini-3.6-flash",
+    PROVIDER_OPENAI: DEFAULT_MODEL,
+}
 
 STYLE_GENTLE: Final = "gentle"
 STYLE_BALANCED: Final = "balanced"

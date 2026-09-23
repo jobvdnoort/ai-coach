@@ -18,6 +18,8 @@ from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
+    BooleanSelectorConfig,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -30,12 +32,19 @@ from .const import (
     COACH_STYLES,
     CONF_BASE_URL,
     CONF_COACH_STYLE,
+    CONF_CUSTOM_MODEL,
     CONF_MODEL,
+    CONF_PROVIDER,
     CONF_TELEGRAM_BOT_TOKEN,
-    DEFAULT_BASE_URL,
+    CONF_USE_CUSTOM_MODEL,
     DEFAULT_COACH_STYLE,
-    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
     DOMAIN,
+    LLM_PROVIDERS,
+    PROVIDER_BASE_URLS,
+    PROVIDER_DEFAULT_MODELS,
+    PROVIDER_GOOGLE_AI_STUDIO,
+    PROVIDER_MODELS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,8 +58,38 @@ COACH_STYLE_SELECTOR = SelectSelector(
         mode=SelectSelectorMode.DROPDOWN,
     )
 )
+PROVIDER_SELECTOR = SelectSelector(
+    SelectSelectorConfig(
+        options=LLM_PROVIDERS,
+        translation_key=CONF_PROVIDER,
+        mode=SelectSelectorMode.DROPDOWN,
+    )
+)
 PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
-URL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+MODEL_TEXT_SELECTOR = TextSelector(TextSelectorConfig())
+BOOLEAN_SELECTOR = BooleanSelector(BooleanSelectorConfig())
+
+
+def _model_selector(provider: str) -> SelectSelector:
+    """Create a model dropdown containing only models for the provider."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=PROVIDER_MODELS[provider],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _entry_provider(config_entry: ConfigEntry) -> str:
+    """Return the provider, including for entries created before this field."""
+    provider = config_entry.data.get(CONF_PROVIDER)
+    if provider in LLM_PROVIDERS:
+        return provider
+    if "generativelanguage.googleapis.com" in config_entry.data.get(
+        CONF_BASE_URL, ""
+    ):
+        return PROVIDER_GOOGLE_AI_STUDIO
+    return DEFAULT_PROVIDER
 
 
 class CannotConnect(Exception):
@@ -103,6 +142,9 @@ class AICoachConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        self._setup_data: dict[str, Any] = {}
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -110,10 +152,10 @@ class AICoachConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             telegram_token = user_input.get(CONF_TELEGRAM_BOT_TOKEN, "").strip()
+            provider = user_input[CONF_PROVIDER]
+            base_url = PROVIDER_BASE_URLS[provider]
             try:
-                await _validate_llm(
-                    self.hass, user_input[CONF_API_KEY], user_input[CONF_BASE_URL]
-                )
+                await _validate_llm(self.hass, user_input[CONF_API_KEY], base_url)
                 if telegram_token:
                     await _validate_telegram(self.hass, telegram_token)
             except InvalidAuth:
@@ -126,24 +168,21 @@ class AICoachConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error during AI Coach setup")
                 errors["base"] = "unknown"
             else:
-                return self.async_create_entry(
-                    title="AI Coach",
-                    data={
-                        CONF_API_KEY: user_input[CONF_API_KEY],
-                        CONF_BASE_URL: user_input[CONF_BASE_URL],
-                        CONF_TELEGRAM_BOT_TOKEN: telegram_token,
-                    },
-                    options={
-                        CONF_COACH_STYLE: user_input[CONF_COACH_STYLE],
-                        CONF_MODEL: user_input[CONF_MODEL],
-                    },
-                )
+                self._setup_data = {
+                    CONF_API_KEY: user_input[CONF_API_KEY],
+                    CONF_PROVIDER: provider,
+                    CONF_BASE_URL: base_url,
+                    CONF_TELEGRAM_BOT_TOKEN: telegram_token,
+                    CONF_COACH_STYLE: user_input[CONF_COACH_STYLE],
+                }
+                return await self.async_step_model()
 
         schema = vol.Schema(
             {
+                vol.Required(
+                    CONF_PROVIDER, default=DEFAULT_PROVIDER
+                ): PROVIDER_SELECTOR,
                 vol.Required(CONF_API_KEY): PASSWORD_SELECTOR,
-                vol.Required(CONF_BASE_URL, default=DEFAULT_BASE_URL): URL_SELECTOR,
-                vol.Required(CONF_MODEL, default=DEFAULT_MODEL): str,
                 vol.Optional(CONF_TELEGRAM_BOT_TOKEN, default=""): PASSWORD_SELECTOR,
                 vol.Required(
                     CONF_COACH_STYLE, default=DEFAULT_COACH_STYLE
@@ -154,6 +193,73 @@ class AICoachConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(schema, user_input),
             errors=errors,
+        )
+
+    async def async_step_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose a model from the selected provider's supported models."""
+        provider = self._setup_data[CONF_PROVIDER]
+        if user_input is not None:
+            if user_input[CONF_USE_CUSTOM_MODEL]:
+                return await self.async_step_custom_model()
+            return self._create_entry(user_input[CONF_MODEL], False)
+
+        return self.async_show_form(
+            step_id="model",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USE_CUSTOM_MODEL, default=False
+                    ): BOOLEAN_SELECTOR,
+                    vol.Required(
+                        CONF_MODEL,
+                        default=PROVIDER_DEFAULT_MODELS[provider],
+                    ): _model_selector(provider)
+                }
+            ),
+        )
+
+    async def async_step_custom_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Allow an arbitrary provider model ID."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            model = user_input[CONF_CUSTOM_MODEL].strip()
+            if model:
+                return self._create_entry(model, True)
+            errors[CONF_CUSTOM_MODEL] = "model_required"
+
+        return self.async_show_form(
+            step_id="custom_model",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_CUSTOM_MODEL): MODEL_TEXT_SELECTOR,
+                }
+            ),
+            errors=errors,
+        )
+
+    def _create_entry(
+        self, model: str, use_custom_model: bool
+    ) -> ConfigFlowResult:
+        """Create the config entry after model selection."""
+        return self.async_create_entry(
+            title="AI Coach",
+            data={
+                CONF_API_KEY: self._setup_data[CONF_API_KEY],
+                CONF_PROVIDER: self._setup_data[CONF_PROVIDER],
+                CONF_BASE_URL: self._setup_data[CONF_BASE_URL],
+                CONF_TELEGRAM_BOT_TOKEN: self._setup_data[
+                    CONF_TELEGRAM_BOT_TOKEN
+                ],
+            },
+            options={
+                CONF_COACH_STYLE: self._setup_data[CONF_COACH_STYLE],
+                CONF_MODEL: model.strip(),
+                CONF_USE_CUSTOM_MODEL: use_custom_model,
+            },
         )
 
     @staticmethod
@@ -168,10 +274,32 @@ class AICoachOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
-
         options = self.config_entry.options
+        provider = _entry_provider(self.config_entry)
+        configured_model = options.get(
+            CONF_MODEL, PROVIDER_DEFAULT_MODELS[provider]
+        )
+        model_is_custom = options.get(
+            CONF_USE_CUSTOM_MODEL,
+            configured_model not in PROVIDER_MODELS[provider],
+        )
+
+        if user_input is not None:
+            if user_input[CONF_USE_CUSTOM_MODEL]:
+                self._pending_coach_style = user_input[CONF_COACH_STYLE]
+                self._custom_model_default = configured_model
+                return await self.async_step_custom_model()
+            return self.async_create_entry(
+                data={
+                    CONF_COACH_STYLE: user_input[CONF_COACH_STYLE],
+                    CONF_MODEL: user_input[CONF_MODEL],
+                    CONF_USE_CUSTOM_MODEL: False,
+                }
+            )
+
+        dropdown_model = configured_model
+        if dropdown_model not in PROVIDER_MODELS[provider]:
+            dropdown_model = PROVIDER_DEFAULT_MODELS[provider]
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -181,8 +309,41 @@ class AICoachOptionsFlow(OptionsFlow):
                         default=options.get(CONF_COACH_STYLE, DEFAULT_COACH_STYLE),
                     ): COACH_STYLE_SELECTOR,
                     vol.Required(
-                        CONF_MODEL, default=options.get(CONF_MODEL, DEFAULT_MODEL)
-                    ): str,
+                        CONF_USE_CUSTOM_MODEL, default=model_is_custom
+                    ): BOOLEAN_SELECTOR,
+                    vol.Required(
+                        CONF_MODEL, default=dropdown_model
+                    ): _model_selector(provider),
                 }
             ),
+        )
+
+    async def async_step_custom_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set an arbitrary model ID in the options flow."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            model = user_input[CONF_CUSTOM_MODEL].strip()
+            if model:
+                return self.async_create_entry(
+                    data={
+                        CONF_COACH_STYLE: self._pending_coach_style,
+                        CONF_MODEL: model,
+                        CONF_USE_CUSTOM_MODEL: True,
+                    }
+                )
+            errors[CONF_CUSTOM_MODEL] = "model_required"
+
+        return self.async_show_form(
+            step_id="custom_model",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_CUSTOM_MODEL,
+                        default=self._custom_model_default,
+                    ): MODEL_TEXT_SELECTOR,
+                }
+            ),
+            errors=errors,
         )

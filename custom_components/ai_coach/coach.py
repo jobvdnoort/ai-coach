@@ -17,6 +17,7 @@ from .const import (
     CONF_BASE_URL,
     CONF_COACH_STYLE,
     CONF_MODEL,
+    CONF_USE_CUSTOM_MODEL,
     DEFAULT_BASE_URL,
     DEFAULT_COACH_STYLE,
     DEFAULT_MODEL,
@@ -27,11 +28,12 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60)
 GEMINI_HOST = "generativelanguage.googleapis.com"
 GEMINI_OPENAI_PATH = "/v1beta/openai"
 
-# Gemini 1.5 was shut down. Existing config entries may still contain its old
-# model ID, so migrate requests to Google's recommended stable Flash model.
+# Migrate retired IDs for old entries. A model explicitly entered through the
+# custom-model flow is never rewritten.
 GEMINI_MODEL_REPLACEMENTS = {
-    "gemini-1.5-flash": "gemini-2.5-flash",
-    "gemini-1.5-flash-latest": "gemini-2.5-flash",
+    "gemini-1.5-flash": "gemini-3.6-flash",
+    "gemini-1.5-flash-latest": "gemini-3.6-flash",
+    "gemini-2.5-flash": "gemini-3.6-flash",
 }
 
 
@@ -76,7 +78,9 @@ class CoachClient:
         )
 
     @staticmethod
-    def _model_name(configured_model: str, is_gemini: bool) -> str:
+    def _model_name(
+        configured_model: str, is_gemini: bool, use_custom_model: bool
+    ) -> str:
         """Return the model ID expected by the selected OpenAI endpoint."""
         model = configured_model.strip()
         if not is_gemini:
@@ -86,6 +90,8 @@ class CoachClient:
         # OpenAI-compatible API requires the bare model ID.
         if model.startswith("models/"):
             model = model.removeprefix("models/")
+        if use_custom_model:
+            return model
         return GEMINI_MODEL_REPLACEMENTS.get(model, model)
 
     def _system_prompt(
@@ -124,7 +130,9 @@ class CoachClient:
         base_url = self._entry.data.get(CONF_BASE_URL, DEFAULT_BASE_URL).rstrip("/")
         endpoint, is_gemini = self._chat_completions_url(base_url)
         model = self._model_name(
-            self._entry.options.get(CONF_MODEL, DEFAULT_MODEL), is_gemini
+            self._entry.options.get(CONF_MODEL, DEFAULT_MODEL),
+            is_gemini,
+            self._entry.options.get(CONF_USE_CUSTOM_MODEL, False),
         )
         payload = {
             "model": model,

@@ -5,16 +5,29 @@
         "title": "Set up AI Coach",
         "description": "Connect an OpenAI-compatible LLM and optionally a Telegram bot.",
         "data": {
+          "provider": "LLM provider",
           "api_key": "LLM API key",
-          "base_url": "LLM API base URL",
-          "model": "Model",
           "telegram_bot_token": "Telegram bot token (optional)",
           "coach_style": "Coach style"
         },
         "data_description": {
-          "base_url": "Any OpenAI-compatible endpoint, e.g. https://api.openai.com/v1 or a local Ollama/LM Studio server.",
           "telegram_bot_token": "Token from @BotFather. Leave empty to only use the dashboard card.",
           "coach_style": "How strict the coach should be."
+        }
+      },
+      "model": {
+        "title": "Choose a model",
+        "description": "Select a predefined model, or enable custom model to enter another model ID on the next step.",
+        "data": {
+          "use_custom_model": "Use custom model",
+          "model": "Model"
+        }
+      },
+      "custom_model": {
+        "title": "Enter a custom model",
+        "description": "Enter the exact model ID accepted by your selected provider.",
+        "data": {
+          "custom_model": "Custom model ID"
         }
       }
     },
@@ -22,6 +35,7 @@
       "cannot_connect": "Failed to connect",
       "invalid_auth": "The LLM API key was rejected",
       "invalid_telegram_token": "The Telegram bot token was rejected",
+      "model_required": "Enter a model ID",
       "unknown": "Unexpected error"
     },
     "abort": {
@@ -29,17 +43,34 @@
     }
   },
   "options": {
+    "error": {
+      "model_required": "Enter a model ID"
+    },
     "step": {
       "init": {
         "title": "AI Coach options",
         "data": {
           "coach_style": "Coach style",
+          "use_custom_model": "Use custom model",
           "model": "Model"
+        }
+      },
+      "custom_model": {
+        "title": "Enter a custom model",
+        "description": "Enter the exact model ID accepted by your selected provider.",
+        "data": {
+          "custom_model": "Custom model ID"
         }
       }
     }
   },
   "selector": {
+    "provider": {
+      "options": {
+        "google_ai_studio": "Google AI Studio (Gemini)",
+        "openai": "OpenAI"
+      }
+    },
     "coach_style": {
       "options": {
         "gentle": "Gentle - encouraging and supportive",
