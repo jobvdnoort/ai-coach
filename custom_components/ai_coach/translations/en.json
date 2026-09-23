@@ -1,0 +1,52 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up AI Coach",
+        "description": "Connect an OpenAI-compatible LLM and optionally a Telegram bot.",
+        "data": {
+          "api_key": "LLM API key",
+          "base_url": "LLM API base URL",
+          "model": "Model",
+          "telegram_bot_token": "Telegram bot token (optional)",
+          "coach_style": "Coach style"
+        },
+        "data_description": {
+          "base_url": "Any OpenAI-compatible endpoint, e.g. https://api.openai.com/v1 or a local Ollama/LM Studio server.",
+          "telegram_bot_token": "Token from @BotFather. Leave empty to only use the dashboard card.",
+          "coach_style": "How strict the coach should be."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "The LLM API key was rejected",
+      "invalid_telegram_token": "The Telegram bot token was rejected",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "single_instance_allowed": "AI Coach is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AI Coach options",
+        "data": {
+          "coach_style": "Coach style",
+          "model": "Model"
+        }
+      }
+    }
+  },
+  "selector": {
+    "coach_style": {
+      "options": {
+        "gentle": "Gentle - encouraging and supportive",
+        "balanced": "Balanced - honest but friendly",
+        "strict": "Strict - holds you accountable",
+        "drill_sergeant": "Drill sergeant - no excuses"
+      }
+    }
+  }
+}
