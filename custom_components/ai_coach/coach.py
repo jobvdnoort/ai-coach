@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -22,6 +24,15 @@ from .const import (
 )
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60)
+GEMINI_HOST = "generativelanguage.googleapis.com"
+GEMINI_OPENAI_PATH = "/v1beta/openai"
+
+# Gemini 1.5 was shut down. Existing config entries may still contain its old
+# model ID, so migrate requests to Google's recommended stable Flash model.
+GEMINI_MODEL_REPLACEMENTS = {
+    "gemini-1.5-flash": "gemini-2.5-flash",
+    "gemini-1.5-flash-latest": "gemini-2.5-flash",
+}
 
 
 class CoachError(Exception):
@@ -34,6 +45,48 @@ class CoachClient:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self._hass = hass
         self._entry = entry
+
+    @staticmethod
+    def _chat_completions_url(base_url: str) -> tuple[str, bool]:
+        """Return an OpenAI Chat Completions URL and whether it is Gemini.
+
+        Google documents the Gemini compatibility endpoint as:
+        https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+        """
+        parsed = urlsplit(base_url.strip())
+        is_gemini = parsed.hostname == GEMINI_HOST
+
+        if is_gemini:
+            # Do not let a missing/wrong trailing path accidentally target the
+            # native generateContent API. Always use Gemini's OpenAI facade.
+            path = GEMINI_OPENAI_PATH
+        else:
+            path = parsed.path.rstrip("/")
+
+        if path.endswith("/chat/completions"):
+            endpoint_path = path
+        else:
+            endpoint_path = f"{path}/chat/completions"
+
+        return (
+            urlunsplit(
+                (parsed.scheme, parsed.netloc, endpoint_path, parsed.query, "")
+            ),
+            is_gemini,
+        )
+
+    @staticmethod
+    def _model_name(configured_model: str, is_gemini: bool) -> str:
+        """Return the model ID expected by the selected OpenAI endpoint."""
+        model = configured_model.strip()
+        if not is_gemini:
+            return model
+
+        # Native Gemini APIs sometimes expose IDs as "models/<id>", while the
+        # OpenAI-compatible API requires the bare model ID.
+        if model.startswith("models/"):
+            model = model.removeprefix("models/")
+        return GEMINI_MODEL_REPLACEMENTS.get(model, model)
 
     def _system_prompt(
         self,
@@ -69,27 +122,49 @@ class CoachClient:
     ) -> str:
         """Return the coach's reply to the conversation in `history`."""
         base_url = self._entry.data.get(CONF_BASE_URL, DEFAULT_BASE_URL).rstrip("/")
+        endpoint, is_gemini = self._chat_completions_url(base_url)
+        model = self._model_name(
+            self._entry.options.get(CONF_MODEL, DEFAULT_MODEL), is_gemini
+        )
         payload = {
-            "model": self._entry.options.get(CONF_MODEL, DEFAULT_MODEL),
+            "model": model,
             "messages": [
                 {"role": "system", "content": self._system_prompt(user_name, weights, trainings)},
                 *({"role": m["role"], "content": m["content"]} for m in history),
             ],
+            "stream": False,
         }
-        headers = {"Authorization": f"Bearer {self._entry.data[CONF_API_KEY]}"}
+        headers = {
+            "Authorization": f"Bearer {self._entry.data[CONF_API_KEY]}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
         session = async_get_clientsession(self._hass)
 
         try:
             async with session.post(
-                f"{base_url}/chat/completions",
+                endpoint,
                 json=payload,
                 headers=headers,
                 timeout=REQUEST_TIMEOUT,
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    raise CoachError(f"LLM API returned {resp.status}: {body[:200]}")
-                data = await resp.json()
+                    detail = body[:500]
+                    try:
+                        error_data = json.loads(body)
+                        if isinstance(error_data, list) and error_data:
+                            error_data = error_data[0]
+                        if isinstance(error_data, dict):
+                            detail = error_data.get("error", {}).get(
+                                "message", detail
+                            )
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+                    raise CoachError(
+                        f"LLM API returned {resp.status} for model {model}: {detail}"
+                    )
+                data = await resp.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError) as err:
             raise CoachError(f"Error talking to LLM API: {err}") from err
 
