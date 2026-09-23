@@ -31,6 +31,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_history)
     websocket_api.async_register_command(hass, ws_send_message)
     websocket_api.async_register_command(hass, ws_clear_history)
+    websocket_api.async_register_command(hass, ws_generate_pairing_code)
 
 
 def _get_data(hass: HomeAssistant) -> AICoachData | None:
@@ -90,6 +91,7 @@ async def ws_send_message(
 
     try:
         reply = await data.coach.async_reply(
+            user_id=user.id,
             user_name=user.name or "the user",
             history=history,
             weights=weights,
@@ -117,3 +119,34 @@ async def ws_clear_history(
         return
     deleted = await data.db.async_clear_history(connection.user.id)
     connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/generate_pairing_code"}
+)
+@websocket_api.async_response
+async def ws_generate_pairing_code(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a Telegram pairing code for the authenticated HA user."""
+    if (data := _require_data(hass, connection, msg)) is None:
+        return
+    if data.telegram is None:
+        connection.send_error(
+            msg["id"],
+            "telegram_not_configured",
+            "Configure a Telegram bot token before linking",
+        )
+        return
+
+    user_id = connection.context(msg).user_id
+    if user_id is None:
+        connection.send_error(
+            msg["id"], "authentication_required", "No authenticated user"
+        )
+        return
+
+    code = await data.db.async_generate_pairing_code(user_id)
+    connection.send_result(msg["id"], {"pairing_code": code})

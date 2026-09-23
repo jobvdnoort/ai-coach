@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import secrets
 import sqlite3
 import threading
 from typing import Any, TypeVar
@@ -12,7 +13,7 @@ from homeassistant.util import dt as dt_util
 
 _T = TypeVar("_T")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS chat_messages (
@@ -53,6 +54,22 @@ CREATE TABLE IF NOT EXISTS telegram_links (
 );
 """
 
+SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS users (
+    ha_user_id       TEXT PRIMARY KEY,
+    telegram_chat_id INTEGER,
+    pairing_code     TEXT,
+    name             TEXT,
+    current_weight   REAL,
+    goals            TEXT,
+    is_onboarded     INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_chat_id
+    ON users (telegram_chat_id) WHERE telegram_chat_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_pairing_code
+    ON users (pairing_code) WHERE pairing_code IS NOT NULL;
+"""
+
 
 class CoachDatabase:
     """Thread-safe wrapper around a single SQLite connection.
@@ -80,6 +97,8 @@ class CoachDatabase:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version < 1:
             conn.executescript(SCHEMA_V1)
+        if version < 2:
+            conn.executescript(SCHEMA_V2)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
         self._conn = conn
@@ -100,6 +119,120 @@ class CoachDatabase:
                 return result
 
         return await self._hass.async_add_executor_job(_job)
+
+    # Users, onboarding and Telegram pairing
+
+    async def async_ensure_user(self, ha_user_id: str) -> dict[str, Any]:
+        """Create the user's profile row if needed and return it."""
+        def _ensure(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute(
+                "INSERT OR IGNORE INTO users (ha_user_id) VALUES (?)",
+                (ha_user_id,),
+            )
+            row = conn.execute(
+                "SELECT * FROM users WHERE ha_user_id = ?", (ha_user_id,)
+            ).fetchone()
+            return dict(row)
+
+        return await self._run(_ensure)
+
+    async def async_get_user(self, ha_user_id: str) -> dict[str, Any]:
+        return await self.async_ensure_user(ha_user_id)
+
+    async def async_get_user_by_telegram(
+        self, telegram_chat_id: int
+    ) -> dict[str, Any] | None:
+        def _select(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute(
+                "SELECT * FROM users WHERE telegram_chat_id = ?",
+                (telegram_chat_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(_select)
+
+    async def async_generate_pairing_code(self, ha_user_id: str) -> str:
+        """Generate and save a cryptographically random unique six-digit code."""
+        def _generate(conn: sqlite3.Connection) -> str:
+            conn.execute(
+                "INSERT OR IGNORE INTO users (ha_user_id) VALUES (?)",
+                (ha_user_id,),
+            )
+            for _ in range(20):
+                code = f"{secrets.randbelow(1_000_000):06d}"
+                exists = conn.execute(
+                    "SELECT 1 FROM users WHERE pairing_code = ?", (code,)
+                ).fetchone()
+                if exists is None:
+                    conn.execute(
+                        "UPDATE users SET pairing_code = ? WHERE ha_user_id = ?",
+                        (code, ha_user_id),
+                    )
+                    return code
+            raise RuntimeError("Could not generate a unique Telegram pairing code")
+
+        return await self._run(_generate)
+
+    async def async_link_telegram(
+        self, pairing_code: str, telegram_chat_id: int
+    ) -> dict[str, Any] | None:
+        """Consume a pairing code and link the Telegram chat to its HA user."""
+        def _link(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute(
+                "SELECT ha_user_id FROM users WHERE pairing_code = ?",
+                (pairing_code,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            ha_user_id = row["ha_user_id"]
+            # A Telegram chat can only represent one HA user.
+            conn.execute(
+                "UPDATE users SET telegram_chat_id = NULL "
+                "WHERE telegram_chat_id = ? AND ha_user_id != ?",
+                (telegram_chat_id, ha_user_id),
+            )
+            conn.execute(
+                "UPDATE users SET telegram_chat_id = ?, pairing_code = NULL "
+                "WHERE ha_user_id = ?",
+                (telegram_chat_id, ha_user_id),
+            )
+            linked = conn.execute(
+                "SELECT * FROM users WHERE ha_user_id = ?", (ha_user_id,)
+            ).fetchone()
+            return dict(linked)
+
+        return await self._run(_link)
+
+    async def async_save_user_profile(
+        self,
+        ha_user_id: str,
+        name: str,
+        current_weight: float,
+        goals: str,
+    ) -> None:
+        """Save a completed onboarding profile and mark it onboarded."""
+        measured_at = dt_util.utcnow().isoformat()
+
+        def _save(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO users "
+                "(ha_user_id, name, current_weight, goals, is_onboarded) "
+                "VALUES (?, ?, ?, ?, 1) "
+                "ON CONFLICT(ha_user_id) DO UPDATE SET "
+                "name = excluded.name, "
+                "current_weight = excluded.current_weight, "
+                "goals = excluded.goals, "
+                "is_onboarded = 1",
+                (ha_user_id, name, current_weight, goals),
+            )
+            conn.execute(
+                "INSERT INTO weight_entries "
+                "(user_id, weight_kg, note, measured_at) VALUES (?, ?, ?, ?)",
+                (ha_user_id, current_weight, "Onboarding profile", measured_at),
+            )
+
+        await self._run(_save)
 
     # Chat history
 

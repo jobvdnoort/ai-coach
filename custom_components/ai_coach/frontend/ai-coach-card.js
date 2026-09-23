@@ -6,7 +6,7 @@
  * connection, so every dashboard user sees only their own history.
  */
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 const CARD_TAG = "ai-coach-card";
 
 const STYLES = `
@@ -39,6 +39,32 @@ const STYLES = `
   }
   .icon-button:hover { background: var(--secondary-background-color); }
   .icon-button[disabled] { opacity: 0.4; cursor: default; }
+  .telegram-link {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--divider-color);
+    background: var(--secondary-background-color);
+  }
+  .link-button {
+    border: none;
+    border-radius: 18px;
+    padding: 8px 14px;
+    cursor: pointer;
+    background: var(--primary-color);
+    color: var(--text-primary-color, #fff);
+    font: inherit;
+  }
+  .link-button[disabled] { opacity: 0.6; cursor: default; }
+  .pairing-instructions {
+    margin-top: 8px;
+    color: var(--primary-text-color);
+    line-height: 1.4;
+  }
+  .pairing-code {
+    font-size: 1.25em;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    user-select: all;
+  }
   .messages {
     flex: 1;
     overflow-y: auto;
@@ -130,6 +156,8 @@ class AICoachCard extends HTMLElement {
     this._messages = [];
     this._historyLoading = false;
     this._sending = false;
+    this._linking = false;
+    this._pairingCode = null;
     this._error = null;
     this._built = false;
   }
@@ -159,6 +187,8 @@ class AICoachCard extends HTMLElement {
     if (userId !== this._userId) {
       this._userId = userId;
       this._messages = [];
+      this._pairingCode = null;
+      this._renderPairing();
       this._loadHistory();
     }
   }
@@ -178,6 +208,13 @@ class AICoachCard extends HTMLElement {
             <ha-icon icon="mdi:delete-sweep-outline"></ha-icon>
           </button>
         </div>
+        <div class="telegram-link">
+          <button class="link-button">Link Telegram</button>
+          <div class="pairing-instructions" hidden>
+            Send <strong>/link <span class="pairing-code"></span></strong>
+            to your AI Coach bot in Telegram.
+          </div>
+        </div>
         <div class="messages"></div>
         <div class="error" hidden></div>
         <div class="composer">
@@ -196,6 +233,9 @@ class AICoachCard extends HTMLElement {
       input: root.querySelector("textarea"),
       send: root.querySelector(".send"),
       clear: root.querySelector(".clear"),
+      link: root.querySelector(".link-button"),
+      pairingInstructions: root.querySelector(".pairing-instructions"),
+      pairingCode: root.querySelector(".pairing-code"),
     };
 
     this._els.title.textContent = this._config?.title ?? "AI Coach";
@@ -203,6 +243,7 @@ class AICoachCard extends HTMLElement {
 
     this._els.send.addEventListener("click", () => this._send());
     this._els.clear.addEventListener("click", () => this._clear());
+    this._els.link.addEventListener("click", () => this._linkTelegram());
     this._els.input.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
@@ -213,6 +254,37 @@ class AICoachCard extends HTMLElement {
 
     this._built = true;
     this._renderMessages();
+    this._renderPairing();
+  }
+
+  async _linkTelegram() {
+    if (!this._hass || this._linking) return;
+    this._linking = true;
+    this._setError(null);
+    this._renderPairing();
+    try {
+      const result = await this._hass.callWS({
+        type: "ai_coach/generate_pairing_code",
+      });
+      this._pairingCode = result.pairing_code;
+    } catch (err) {
+      this._setError(this._errorText(err, "Could not create a pairing code"));
+    } finally {
+      this._linking = false;
+      this._renderPairing();
+    }
+  }
+
+  _renderPairing() {
+    if (!this._built) return;
+    this._els.link.disabled = this._linking;
+    this._els.link.textContent = this._linking
+      ? "Generating…"
+      : this._pairingCode
+        ? "Generate new code"
+        : "Link Telegram";
+    this._els.pairingInstructions.hidden = !this._pairingCode;
+    this._els.pairingCode.textContent = this._pairingCode ?? "";
   }
 
   async _loadHistory() {

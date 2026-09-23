@@ -30,6 +30,13 @@ manual Lovelace resource is needed.
 | Telegram bot token | Optional, from @BotFather |
 | Coach style | gentle / balanced / strict / drill sergeant (changeable later) |
 
+## Telegram linking
+
+Select **Link Telegram** in the dashboard card, then send `/link 123456` to
+the configured bot using the generated six-digit code. The code is bound to
+the currently authenticated Home Assistant user. Dashboard and Telegram
+messages then share that user's chat history and onboarding profile.
+
 ## WebSocket API
 
 | Command | Payload | Result |
@@ -37,5 +44,6 @@ manual Lovelace resource is needed.
 | `ai_coach/history` | `limit?` | `{messages: [...]}` |
 | `ai_coach/send_message` | `message` | `{user_message, assistant_message}` |
 | `ai_coach/clear_history` | – | `{deleted}` |
+| `ai_coach/generate_pairing_code` | – | `{pairing_code}` |
 
 The user is always derived from the authenticated WebSocket connection.
