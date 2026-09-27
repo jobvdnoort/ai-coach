@@ -18,7 +18,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
 from .coach import CoachError
-from .const import DOMAIN, HISTORY_CONTEXT_LIMIT, MAX_MESSAGE_LENGTH, RECENT_DATA_LIMIT
+from .const import CHAT_RETENTION_LIMIT, DOMAIN, MAX_MESSAGE_LENGTH
 
 if TYPE_CHECKING:
     from . import AICoachData
@@ -32,6 +32,8 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_send_message)
     websocket_api.async_register_command(hass, ws_clear_history)
     websocket_api.async_register_command(hass, ws_generate_pairing_code)
+    websocket_api.async_register_command(hass, ws_status)
+    websocket_api.async_register_command(hass, ws_unlink_telegram)
 
 
 def _get_data(hass: HomeAssistant) -> AICoachData | None:
@@ -84,25 +86,22 @@ async def ws_send_message(
         return
 
     user = connection.user
-    user_message = await data.db.async_add_message(user.id, "user", msg["message"])
-    history = await data.db.async_get_history(user.id, HISTORY_CONTEXT_LIMIT)
-    weights = await data.db.async_get_weights(user.id, RECENT_DATA_LIMIT)
-    trainings = await data.db.async_get_trainings(user.id, RECENT_DATA_LIMIT)
+    user_message = await data.db.async_add_message(
+        user.id, "user", msg["message"], retention=CHAT_RETENTION_LIMIT
+    )
 
     try:
         reply = await data.coach.async_reply(
-            user_id=user.id,
-            user_name=user.name or "the user",
-            history=history,
-            weights=weights,
-            trainings=trainings,
+            user_id=user.id, user_name=user.name or "the user"
         )
     except CoachError as err:
         _LOGGER.warning("AI Coach reply failed: %s", err)
-        connection.send_error(msg["id"], "llm_error", str(err))
+        connection.send_error(msg["id"], "llm_error", err.user_message)
         return
 
-    assistant_message = await data.db.async_add_message(user.id, "assistant", reply)
+    assistant_message = await data.db.async_add_message(
+        user.id, "assistant", reply, retention=CHAT_RETENTION_LIMIT
+    )
     connection.send_result(
         msg["id"],
         {"user_message": user_message, "assistant_message": assistant_message},
@@ -150,3 +149,35 @@ async def ws_generate_pairing_code(
 
     code = await data.db.async_generate_pairing_code(user_id)
     connection.send_result(msg["id"], {"pairing_code": code})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/status"})
+@websocket_api.async_response
+async def ws_status(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return Telegram link state for the connected user."""
+    if (data := _require_data(hass, connection, msg)) is None:
+        return
+    profile = await data.db.async_get_user(connection.user.id)
+    connection.send_result(
+        msg["id"],
+        {
+            "telegram_configured": data.telegram is not None,
+            "telegram_linked": profile.get("telegram_chat_id") is not None,
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/unlink_telegram"}
+)
+@websocket_api.async_response
+async def ws_unlink_telegram(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Disconnect the connected user's Telegram chat."""
+    if (data := _require_data(hass, connection, msg)) is None:
+        return
+    unlinked = await data.db.async_unlink_telegram(connection.user.id)
+    connection.send_result(msg["id"], {"unlinked": unlinked})

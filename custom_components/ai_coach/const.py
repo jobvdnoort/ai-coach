@@ -84,6 +84,15 @@ STYLE_PROMPTS: Final = {
     ),
 }
 
-HISTORY_CONTEXT_LIMIT: Final = 20
+# Only a short conversational window is sent to the LLM. Everything that must
+# be remembered longer is stored as structured data or a coach note.
+HISTORY_CONTEXT_LIMIT: Final = 8
+HISTORY_CONTEXT_MAX_AGE_HOURS: Final = 12
+HISTORY_CONTEXT_MAX_CHARS: Final = 1500
+CHAT_RETENTION_LIMIT: Final = 200
 RECENT_DATA_LIMIT: Final = 5
 MAX_MESSAGE_LENGTH: Final = 4000
+
+PLAN_TYPES: Final = ["meal", "training"]
+MEAL_TYPES: Final = ["breakfast", "lunch", "dinner", "snack", "drink"]
+LOG_CATEGORIES: Final = ["meals", "trainings", "weights", "wellbeing", "plans"]

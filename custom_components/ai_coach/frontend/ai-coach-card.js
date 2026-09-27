@@ -6,7 +6,7 @@
  * connection, so every dashboard user sees only their own history.
  */
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.3.0";
 const CARD_TAG = "ai-coach-card";
 
 const STYLES = `
@@ -65,9 +65,17 @@ const STYLES = `
     letter-spacing: 0.15em;
     user-select: all;
   }
+  .header-actions { display: inline-flex; align-items: center; gap: 2px; }
+  .telegram-status { color: var(--primary-color); }
+  .telegram-link[hidden], .telegram-status[hidden] { display: none; }
+  /* A fixed height (not flex: 1) is required: in an auto-height card a
+     flexible child grows with its content instead of scrolling. */
   .messages {
-    flex: 1;
+    flex: 0 0 auto;
+    min-height: 0;
+    box-sizing: border-box;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 12px 16px;
     display: flex;
     flex-direction: column;
@@ -158,8 +166,19 @@ class AICoachCard extends HTMLElement {
     this._sending = false;
     this._linking = false;
     this._pairingCode = null;
+    this._telegramConfigured = false;
+    this._telegramLinked = false;
+    this._statusTimer = null;
     this._error = null;
     this._built = false;
+  }
+
+  disconnectedCallback() {
+    this._stopStatusPolling();
+  }
+
+  connectedCallback() {
+    if (this._pairingCode && !this._telegramLinked) this._startStatusPolling();
   }
 
   static getStubConfig() {
@@ -188,8 +207,11 @@ class AICoachCard extends HTMLElement {
       this._userId = userId;
       this._messages = [];
       this._pairingCode = null;
+      this._telegramLinked = false;
+      this._stopStatusPolling();
       this._renderPairing();
       this._loadHistory();
+      this._loadStatus();
     }
   }
 
@@ -204,11 +226,17 @@ class AICoachCard extends HTMLElement {
       <ha-card>
         <div class="header">
           <span class="title"></span>
-          <button class="icon-button clear" title="Clear chat history">
-            <ha-icon icon="mdi:delete-sweep-outline"></ha-icon>
-          </button>
+          <span class="header-actions">
+            <button class="icon-button telegram-status" hidden
+              title="Telegram linked — click to unlink">
+              <ha-icon icon="mdi:send-check"></ha-icon>
+            </button>
+            <button class="icon-button clear" title="Clear chat history">
+              <ha-icon icon="mdi:delete-sweep-outline"></ha-icon>
+            </button>
+          </span>
         </div>
-        <div class="telegram-link">
+        <div class="telegram-link" hidden>
           <button class="link-button">Link Telegram</button>
           <div class="pairing-instructions" hidden>
             Send <strong>/link <span class="pairing-code"></span></strong>
@@ -234,6 +262,8 @@ class AICoachCard extends HTMLElement {
       send: root.querySelector(".send"),
       clear: root.querySelector(".clear"),
       link: root.querySelector(".link-button"),
+      linkBar: root.querySelector(".telegram-link"),
+      telegramStatus: root.querySelector(".telegram-status"),
       pairingInstructions: root.querySelector(".pairing-instructions"),
       pairingCode: root.querySelector(".pairing-code"),
     };
@@ -244,6 +274,7 @@ class AICoachCard extends HTMLElement {
     this._els.send.addEventListener("click", () => this._send());
     this._els.clear.addEventListener("click", () => this._clear());
     this._els.link.addEventListener("click", () => this._linkTelegram());
+    this._els.telegramStatus.addEventListener("click", () => this._unlinkTelegram());
     this._els.input.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
@@ -267,6 +298,7 @@ class AICoachCard extends HTMLElement {
         type: "ai_coach/generate_pairing_code",
       });
       this._pairingCode = result.pairing_code;
+      this._startStatusPolling();
     } catch (err) {
       this._setError(this._errorText(err, "Could not create a pairing code"));
     } finally {
@@ -275,8 +307,58 @@ class AICoachCard extends HTMLElement {
     }
   }
 
+  async _unlinkTelegram() {
+    if (!this._hass) return;
+    if (!confirm("Unlink Telegram from your AI Coach?")) return;
+    try {
+      await this._hass.callWS({ type: "ai_coach/unlink_telegram" });
+      this._telegramLinked = false;
+      this._pairingCode = null;
+    } catch (err) {
+      this._setError(this._errorText(err, "Could not unlink Telegram"));
+    }
+    this._renderPairing();
+  }
+
+  async _loadStatus() {
+    if (!this._hass) return;
+    try {
+      const status = await this._hass.callWS({ type: "ai_coach/status" });
+      this._telegramConfigured = status.telegram_configured;
+      this._telegramLinked = status.telegram_linked;
+      if (this._telegramLinked) {
+        this._pairingCode = null;
+        this._stopStatusPolling();
+      }
+    } catch (err) {
+      // Older backends lack this command; keep the link bar usable.
+      this._telegramConfigured = true;
+    }
+    this._renderPairing();
+  }
+
+  // Poll while a pairing code is shown so the bar disappears once /link is sent.
+  _startStatusPolling() {
+    this._stopStatusPolling();
+    const startedAt = Date.now();
+    this._statusTimer = setInterval(() => {
+      if (this._telegramLinked || Date.now() - startedAt > 10 * 60 * 1000) {
+        this._stopStatusPolling();
+        return;
+      }
+      this._loadStatus();
+    }, 4000);
+  }
+
+  _stopStatusPolling() {
+    if (this._statusTimer) clearInterval(this._statusTimer);
+    this._statusTimer = null;
+  }
+
   _renderPairing() {
     if (!this._built) return;
+    this._els.linkBar.hidden = !this._telegramConfigured || this._telegramLinked;
+    this._els.telegramStatus.hidden = !this._telegramLinked;
     this._els.link.disabled = this._linking;
     this._els.link.textContent = this._linking
       ? "Generating…"
@@ -293,7 +375,7 @@ class AICoachCard extends HTMLElement {
     this._setError(null);
     this._renderMessages();
     try {
-      const result = await this._hass.callWS({ type: "ai_coach/history", limit: 100 });
+      const result = await this._hass.callWS({ type: "ai_coach/history", limit: 50 });
       this._messages = result.messages;
     } catch (err) {
       this._setError(this._errorText(err, "Could not load chat history"));
@@ -377,7 +459,18 @@ class AICoachCard extends HTMLElement {
 
     this._els.send.disabled = this._sending;
     this._els.clear.disabled = this._sending || this._messages.length === 0;
-    container.scrollTop = container.scrollHeight;
+    this._scrollToBottom();
+  }
+
+  // ha-markdown renders asynchronously, so scroll again once it has laid out.
+  _scrollToBottom() {
+    const container = this._els.messages;
+    const scroll = () => {
+      container.scrollTop = container.scrollHeight;
+    };
+    scroll();
+    requestAnimationFrame(scroll);
+    setTimeout(scroll, 150);
   }
 
   _bubble(msg) {
